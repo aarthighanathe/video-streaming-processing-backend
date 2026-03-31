@@ -2,6 +2,8 @@
 const request = require('supertest')
 const mongoose = require('mongoose')
 
+// ── Env vars — must be set before requiring server ─────────────────────────
+process.env.NODE_ENV = 'test'
 process.env.MONGO_URI = process.env.TEST_MONGO_URI || 'mongodb://localhost:27017/videoapp_test'
 process.env.JWT_SECRET = 'test_jwt_secret_32chars_minimum!!'
 process.env.REFRESH_TOKEN_SECRET = 'test_refresh_secret_32chars_min!!'
@@ -9,18 +11,19 @@ process.env.REDIS_URL = process.env.TEST_REDIS_URL || 'redis://localhost:6379'
 process.env.CLOUDINARY_CLOUD_NAME = 'test_cloud'
 process.env.CLOUDINARY_API_KEY = 'test_key'
 process.env.CLOUDINARY_API_SECRET = 'test_secret'
-process.env.NODE_ENV = 'test'
-
-let app, server
-let editorToken, viewerToken, adminToken
-let createdVideoId
+process.env.FRONTEND_URL = 'http://localhost:5173'
 
 // ── Mock Cloudinary + BullMQ so tests don't need real credentials ──────────
 jest.mock('../config/cloudinary', () => ({
   cloudinary: {
     utils: { api_sign_request: () => 'mock_signature' },
     uploader: { destroy: jest.fn().mockResolvedValue({ result: 'ok' }) },
-    api: { resource: jest.fn().mockResolvedValue({ duration: 60, width: 1920, height: 1080, bit_rate: 5000000, bytes: 50000000, frame_rate: 30, audio: true, format: 'mp4' }) },
+    api: {
+      resource: jest.fn().mockResolvedValue({
+        duration: 60, width: 1920, height: 1080, bit_rate: 5000000,
+        bytes: 50000000, frame_rate: 30, audio: true, format: 'mp4'
+      })
+    },
     url: jest.fn().mockReturnValue('https://res.cloudinary.com/test/video/upload/mock.mp4'),
   }
 }))
@@ -31,26 +34,30 @@ jest.mock('../services/videoQueue', () => ({
   closeQueue: jest.fn().mockResolvedValue(undefined),
 }))
 
+let app, server
+let editorToken, viewerToken, adminToken
+let createdVideoId
+
 beforeAll(async () => {
   const mod = require('../server')
   app = mod.app
   server = mod.server
   await mongoose.connection.dropDatabase()
 
+  const User = require('../models/User')
+
   // Register editor
   const editorRes = await request(app)
     .post('/api/auth/register')
     .send({ name: 'Editor User', email: 'editor@example.com', password: 'password123' })
-  // Manually promote to editor via mongoose (no admin yet)
-  const User = require('../models/User')
   await User.findByIdAndUpdate(editorRes.body.user.id, { role: 'editor' })
   const editorLogin = await request(app)
     .post('/api/auth/login')
     .send({ email: 'editor@example.com', password: 'password123' })
   editorToken = editorLogin.body.accessToken
 
-  // Register viewer
-  const viewerRes = await request(app)
+  // Register viewer (stays as viewer — default role)
+  await request(app)
     .post('/api/auth/register')
     .send({ name: 'Viewer User', email: 'viewer@example.com', password: 'password123' })
   const viewerLogin = await request(app)
@@ -88,6 +95,15 @@ describe('GET /api/videos/upload-signature', () => {
     expect(res.body).toHaveProperty('cloudName')
   })
 
+  it('returns signature for admin', async () => {
+    const res = await request(app)
+      .get('/api/videos/upload-signature')
+      .set('Authorization', `Bearer ${adminToken}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveProperty('signature')
+  })
+
   it('denies viewer', async () => {
     const res = await request(app)
       .get('/api/videos/upload-signature')
@@ -123,7 +139,6 @@ describe('POST /api/videos/save', () => {
     expect(res.body.video.title).toBe('Test Video')
     createdVideoId = res.body.video._id
 
-    // Verify queue job was enqueued
     const { videoQueue } = require('../services/videoQueue')
     expect(videoQueue.add).toHaveBeenCalledWith('process', expect.objectContaining({
       publicId: 'videoapp/videos/test123'
@@ -137,6 +152,27 @@ describe('POST /api/videos/save', () => {
       .send({ title: 'No Public ID', videoUrl: 'https://example.com/video.mp4' })
 
     expect(res.status).toBe(400)
+  })
+
+  it('rejects missing videoUrl', async () => {
+    const res = await request(app)
+      .post('/api/videos/save')
+      .set('Authorization', `Bearer ${editorToken}`)
+      .send({ publicId: 'videoapp/videos/nurl' })
+
+    expect(res.status).toBe(400)
+  })
+
+  it('denies viewer from saving a video', async () => {
+    const res = await request(app)
+      .post('/api/videos/save')
+      .set('Authorization', `Bearer ${viewerToken}`)
+      .send({
+        publicId: 'videoapp/videos/viewer_attempt',
+        videoUrl: 'https://res.cloudinary.com/test/video/upload/viewer.mp4'
+      })
+
+    expect(res.status).toBe(403)
   })
 })
 
@@ -170,13 +206,18 @@ describe('GET /api/videos', () => {
     expect(res.body.length).toBeGreaterThan(0)
   })
 
-  it('filters by status', async () => {
+  it('filters by status=processing', async () => {
     const res = await request(app)
       .get('/api/videos?status=processing')
       .set('Authorization', `Bearer ${editorToken}`)
 
     expect(res.status).toBe(200)
     res.body.forEach(v => expect(v.status).toBe('processing'))
+  })
+
+  it('returns 401 without token', async () => {
+    const res = await request(app).get('/api/videos')
+    expect(res.status).toBe(401)
   })
 })
 
@@ -191,10 +232,27 @@ describe('GET /api/videos/:id', () => {
     expect(res.body._id).toBe(createdVideoId)
   })
 
+  it('admin can get any video', async () => {
+    const res = await request(app)
+      .get(`/api/videos/${createdVideoId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body._id).toBe(createdVideoId)
+  })
+
   it('viewer cannot get unassigned video', async () => {
     const res = await request(app)
       .get(`/api/videos/${createdVideoId}`)
       .set('Authorization', `Bearer ${viewerToken}`)
+
+    expect(res.status).toBe(404)
+  })
+
+  it('returns 404 for non-existent video id', async () => {
+    const res = await request(app)
+      .get('/api/videos/000000000000000000000000')
+      .set('Authorization', `Bearer ${adminToken}`)
 
     expect(res.status).toBe(404)
   })
@@ -229,6 +287,16 @@ describe('PATCH /api/videos/:id', () => {
 
     expect(res.status).toBe(403)
   })
+
+  it('admin can rename any video', async () => {
+    const res = await request(app)
+      .patch(`/api/videos/${createdVideoId}`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ title: 'Admin Renamed' })
+
+    expect(res.status).toBe(200)
+    expect(res.body.video.title).toBe('Admin Renamed')
+  })
 })
 
 // ─── Assign video ──────────────────────────────────────────────────────────
@@ -258,12 +326,29 @@ describe('POST /api/videos/:id/assign', () => {
 
     expect(res.status).toBe(200)
   })
+
+  it('viewer cannot assign videos', async () => {
+    const res = await request(app)
+      .post(`/api/videos/${createdVideoId}/assign`)
+      .set('Authorization', `Bearer ${viewerToken}`)
+      .send({ userIds: [viewerUserId] })
+
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects invalid userIds', async () => {
+    const res = await request(app)
+      .post(`/api/videos/${createdVideoId}/assign`)
+      .set('Authorization', `Bearer ${editorToken}`)
+      .send({ userIds: ['000000000000000000000000'] })
+
+    expect(res.status).toBe(400)
+  })
 })
 
 // ─── Stream video ──────────────────────────────────────────────────────────
 describe('GET /api/videos/:id/stream', () => {
   beforeAll(async () => {
-    // Set video to 'safe' so it can be streamed
     const Video = require('../models/Video')
     await Video.findByIdAndUpdate(createdVideoId, { status: 'safe' })
   })
@@ -285,6 +370,29 @@ describe('GET /api/videos/:id/stream', () => {
 
     expect(res.status).toBe(200)
     expect(res.body).toHaveProperty('streamUrl')
+  })
+
+  it('admin can stream any video', async () => {
+    const res = await request(app)
+      .get(`/api/videos/${createdVideoId}/stream`)
+      .set('Authorization', `Bearer ${adminToken}`)
+
+    expect(res.status).toBe(200)
+    expect(res.body).toHaveProperty('streamUrl')
+  })
+
+  it('returns 202 when video is still processing', async () => {
+    const Video = require('../models/Video')
+    await Video.findByIdAndUpdate(createdVideoId, { status: 'processing' })
+
+    const res = await request(app)
+      .get(`/api/videos/${createdVideoId}/stream`)
+      .set('Authorization', `Bearer ${editorToken}`)
+
+    expect(res.status).toBe(202)
+
+    // Reset back to safe for subsequent tests
+    await Video.findByIdAndUpdate(createdVideoId, { status: 'safe' })
   })
 })
 
