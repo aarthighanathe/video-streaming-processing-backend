@@ -19,10 +19,9 @@ A full-stack application for uploading, processing, and streaming videos with re
 
 ## Live Demo
 
-- **Frontend:** `https://your-app.vercel.app`
-- **Backend API:** `https://your-api.onrender.com`
-- **Swagger Docs:** `https://your-api.onrender.com/api/docs`
-- **Demo video:** `https://your-loom-link`
+- Frontend: https://video-streaming-processing.vercel.app/
+- Backend API: https://video-streaming-processing-backend.onrender.com
+- Demo video: https://drive.google.com/file/d/1vNXJ3yYfhL_MkBGMJkTdVkdfvrwnR-gm/view
 
 ---
 
@@ -221,8 +220,6 @@ CLOUDINARY_CLOUD_NAME=your_cloud_name
 CLOUDINARY_API_KEY=your_api_key
 CLOUDINARY_API_SECRET=your_api_secret
 
-# Optional: expose Swagger in production
-# ENABLE_DOCS=true
 ```
 
 ### Frontend — `frontend/.env`
@@ -252,10 +249,6 @@ Tests use an isolated `videoapp_test` MongoDB database. Cloudinary and BullMQ ar
 
 ---
 
-## API Documentation
-
-Full interactive documentation with request/response schemas is available at **`/api/docs`** (always on in development; set `ENABLE_DOCS=true` to expose in production).
-
 ### Authentication — `/api/auth`
 
 | Method | Path | Auth | Description |
@@ -282,6 +275,9 @@ Full interactive documentation with request/response schemas is available at **`
 
 All new accounts start as **Viewer**. The refresh token is set as an httpOnly cookie and is never included in the JSON body. On `/refresh`, no request body is needed — the cookie is read automatically and a new token pair is issued (rotation).
 
+Test Credentials To Verify The Flow
+email : test@test.com
+password: 123456
 ---
 
 ### Videos — `/api/videos`
