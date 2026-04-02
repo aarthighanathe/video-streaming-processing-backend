@@ -276,7 +276,12 @@ Tests use an isolated `videoapp_test` MongoDB database. Cloudinary and BullMQ ar
 All new accounts start as **Viewer**. The refresh token is set as an httpOnly cookie and is never included in the JSON body. On `/refresh`, no request body is needed — the cookie is read automatically and a new token pair is issued (rotation).
 
 Test Credentials To Verify The Flow
+For Viewer Role
 email : test@test.com
+password: 123456
+
+For Admin Role
+email : admin@test.com
 password: 123456
 ---
 
